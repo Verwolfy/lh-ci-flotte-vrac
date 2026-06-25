@@ -48,63 +48,89 @@ def fetch_with_auto_head(ws):
 @st.cache_data(ttl=600)
 def load_data():
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-
-    # --- NOUVEAU SYSTÈME D'AUTHENTIFICATION HYBRIDE ---
+    
+    # --- AUTHENTIFICATION SÉCURISÉE CLOUD & LOCAL ---
+    # On essaie d'abord de lire le coffre-fort de Secrets de Streamlit Cloud
+    if "gcp_service_account" in st.secrets:
+        try:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        except Exception as e:
+            st.error(f"Erreur lors de la lecture des Secrets Cloud : {e}")
+            return pd.DataFrame()
+    else:
+        # Si on est sur ton PC (pas sur le cloud), on utilise le fichier local
+        if os.path.exists(SERVICE_ACCOUNT_FILE):
+            creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
+        else:
+            st.error("Fichier d'authentification 'service_account.json' introuvable en local et aucun Secret détecté sur le Cloud.")
+            return pd.DataFrame()
+    # ------------------------------------------------
+    
     try:
-        # 1. Tente de lire depuis le coffre-fort cloud (Streamlit Secrets)
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    except Exception:
-        # 2. S'il n'y a pas de cloud, utilise le fichier local (Ton PC)
-        creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
-    # --------------------------------------------------
-
-    gc = gspread.authorize(creds)
-    wb = gc.open_by_key(SHEET_ID)
-
+        gc = gspread.authorize(creds)
+        wb = gc.open_by_key(SHEET_ID)
+    except Exception as e:
+        st.error(f"Erreur de connexion à Google Sheets (Vérifiez l'ID ou les permissions de l'e-mail du robot) : {e}")
+        return pd.DataFrame()
+    
     # Lecture des onglets nécessaires
     df_sites = fetch_with_auto_head(wb.worksheet("CLIENTS_SITES"))
     df_flotte = fetch_with_auto_head(wb.worksheet("FLOTTE_CLIENTS"))
     df_volumes = fetch_with_auto_head(wb.worksheet("VOLUMES_SAP"))
     df_flotte_lh = fetch_with_auto_head(wb.worksheet("FLOTTE_LH"))
-    df_params = fetch_with_auto_head(wb.worksheet("PARAMETRES")).set_index("parametre")
+    
+    try:
+        df_params = fetch_with_auto_head(wb.worksheet("PARAMETRES")).set_index("parametre")
+        spot_ref = float(df_params.loc["tarif_spot_ref_fcfa_t", "valeur"])
+    except:
+        spot_ref = 4500.0
+        
+    try:
+        tonnage_std = float(df_params.loc["tonnage_camion_std", "valeur"])
+    except:
+        tonnage_std = 27.0
+        
+    try:
+        coeff_remplissage = float(df_params.loc["coef_remplissage_min", "valeur"])
+    except:
+        coeff_remplissage = 0.92
 
-    # Extraction des variables globales (fallbacks si manquantes)
-    try: spot_ref = float(df_params.loc["tarif_spot_ref_fcfa_t", "valeur"])
-    except: spot_ref = 4500.0
-    try: tonnage_std = float(df_params.loc["tonnage_camion_std", "valeur"])
-    except: tonnage_std = 27.0
-    try: coeff_remplissage = float(df_params.loc["coef_remplissage_min", "valeur"])
-    except: coeff_remplissage = 0.92
+    # Sécurité si un DataFrame vital est vide
+    for df_temp, name in [(df_sites, "CLIENTS_SITES"), (df_flotte, "FLOTTE_CLIENTS"), (df_volumes, "VOLUMES_SAP")]:
+        if df_temp.empty or "client_id" not in df_temp.columns:
+            st.error(f"⚠️ Impossible de trouver la colonne 'client_id' dans l'onglet : {name}.")
+            return pd.DataFrame()
 
     # Nettoyage des chaînes
     for d in [df_sites, df_flotte, df_volumes, df_flotte_lh]:
-        if "client_id" in d.columns: d["client_id"] = d["client_id"].astype(str).str.strip()
-
+        if "client_id" in d.columns: 
+            d["client_id"] = d["client_id"].astype(str).str.strip()
+    
     if "cap_mensuelle_t" in df_flotte.columns:
         df_flotte.rename(columns={"cap_mensuelle_t": "capacite_mensuelle_t"}, inplace=True)
-
-    # Conversions numériques numériques
+    
+    # Conversions numériques
     cap_col = "capacite_mensuelle_t" if "capacite_mensuelle_t" in df_flotte.columns else df_flotte.columns[3]
     df_flotte[cap_col] = pd.to_numeric(df_flotte[cap_col], errors="coerce").fillna(0)
-
+    
     vol_col = "volume_exw_t" if "volume_exw_t" in df_volumes.columns else df_volumes.columns[5]
     df_volumes[vol_col] = pd.to_numeric(df_volumes[vol_col], errors="coerce").fillna(0)
-
+    
     # Agrégations pour le surplus
     agg_flotte = df_flotte.groupby("client_id").agg(capacite_t_mois=(cap_col, "sum")).reset_index()
     agg_volumes = df_volumes.groupby("client_id").agg(besoin_exw_t_mois=(vol_col, "mean")).reset_index()
-
+    
     df_main = df_sites.merge(agg_flotte, on="client_id", how="left").merge(agg_volumes, on="client_id", how="left")
     df_main.fillna({"capacite_t_mois": 0, "besoin_exw_t_mois": 0}, inplace=True)
     df_main["surplus_t_mois"] = (df_main["capacite_t_mois"] - df_main["besoin_exw_t_mois"]).clip(lower=0)
-
+    
     # Calculs Financiers
     df_main["tarif_spot_ref"] = spot_ref
     df_main["tarif_cible_client"] = df_main["tarif_spot_ref"] * 0.85
     df_main["gain_par_tonne"] = df_main["tarif_spot_ref"] - df_main["tarif_cible_client"]
     df_main["economie_potentielle_mensuelle"] = df_main["surplus_t_mois"] * df_main["gain_par_tonne"]
-
+    
     return df_main, df_flotte_lh, spot_ref, tonnage_std, coeff_remplissage
 
 # ── INTERFACE UTILISATEUR ────────────────────────────────────────────────────

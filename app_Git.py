@@ -1,6 +1,6 @@
 """
 ═══════════════════════════════════════════════════════════════════════════════
-APPLICATION INTÉGRALE — TMS & BUSINESS INTELLIGENCE VRAC (Version Dynamique Usine)
+APPLICATION INTÉGRALE — TMS & BUSINESS INTELLIGENCE VRAC (Version Multi-jours)
 LH Côte d'Ivoire | Mapping Vrac & Planification Flotte
 ═══════════════════════════════════════════════════════════════════════════════
 """
@@ -14,6 +14,7 @@ from streamlit_folium import st_folium
 import plotly.express as px
 import os
 import math
+import datetime
 
 # ── CONFIGURATION DE LA PAGE ─────────────────────────────────────────────────
 st.set_page_config(page_title="LH CI - Flotte Vrac & Dispatch", page_icon="📅", layout="wide")
@@ -90,12 +91,10 @@ def load_data():
     try: coeff_remplissage = float(df_params.loc["coef_remplissage_min", "valeur"])
     except: coeff_remplissage = 0.92
 
-    # --- NOUVEAUTÉ : LECTURE DYNAMIQUE DES COORDONNÉES USINE ---
     try:
         usine_lat = float(df_params.loc["usine_latitude", "valeur"])
         usine_lon = float(df_params.loc["usine_longitude", "valeur"])
     except:
-        # Fallback si absent du Sheets (Coordonnées par défaut Abidjan)
         usine_lat = 5.3599
         usine_lon = -4.0083
 
@@ -173,16 +172,14 @@ try:
             "📅 Planification des Tournées (Dispatch)"
         ])
         
-        # ONGLET 1 : CARTE INTERACTIVE (DYNAMIQUE)
+        # ONGLET 1 : CARTE INTERACTIVE
         with tab1:
             st.subheader("Cartographie des sites clients")
             df_map = df.dropna(subset=['latitude', 'longitude'])
             df_map = df_map[(df_map['latitude'] != '') & (df_map['longitude'] != '')]
             if not df_map.empty:
-                # La carte se centre dynamiquement sur la variable usine_lat et usine_lon
                 m = folium.Map(location=[usine_lat, usine_lon], zoom_start=11, tiles="OpenStreetMap")
                 folium.Marker([usine_lat, usine_lon], popup="Usine LH CI", icon=folium.Icon(color="black", icon="industry", prefix='fa')).add_to(m)
-                
                 for idx, row in df_map.iterrows():
                     try:
                         lat, lon = float(row['latitude']), float(row['longitude'])
@@ -194,7 +191,7 @@ try:
             else:
                 st.warning("Aucune coordonnée GPS valide trouvée.")
 
-        # ONGLET 2 : ANALYSE DES SURPLUS (COMMERCIAL)
+        # ONGLET 2 : ANALYSE DES SURPLUS
         with tab2:
             st.subheader("Volume de surplus disponible")
             df_chart = df[df['surplus_t_mois'] > 0].sort_values("surplus_t_mois", ascending=False).head(10)
@@ -223,51 +220,88 @@ try:
             df_display_fin.columns = ["Code SAP", "Nom Client", "Zone", "Surplus (T/mois)", "Tarif Cible (FCFA/T)", "Économie Potentielle (FCFA/mois)"]
             st.dataframe(df_display_fin.sort_values("Économie Potentielle (FCFA/mois)", ascending=False), use_container_width=True)
 
-        # ONGLET 4 : MOTEUR DE SAISIE INTERACTIVE & DISPATCHING LIVE
+        # ONGLET 4 : MOTEUR DE PLANIFICATION MULTI-JOURS INTERACTIF
         with tab4:
-            st.subheader("📋 Saisie des Commandes du Jour & Dispatching Automatique")
-            st.write("Saisissez ou collez votre carnet de commandes du jour directement dans la grille ci-dessous.")
+            st.subheader("📅 Planification Multi-jours & Génération d'Ordres de Transport")
+            st.write("Programmez les livraisons pour les jours à venir. Sélectionnez le client et le volume, l'outil s'occupe du reste.")
 
-            if "df_saisie" not in st.session_state:
-                st.session_state.df_saisie = pd.DataFrame(
+            # Extraction dynamique des options de choix pour sécuriser la saisie
+            liste_clients_choix = sorted(df["client_nom"].dropna().unique().tolist())
+            
+            # Détermination des sites (on se base sur les zones ou une colonne site si elle existe)
+            liste_sites_choix = sorted(df["zone"].dropna().unique().tolist())
+            if "site" in df.columns:
+                liste_sites_choix = sorted(df["site"].dropna().unique().tolist())
+
+            # Initialisation du tableau de saisie multi-jours
+            if "df_saisie_multi" not in st.session_state:
+                st.session_state.df_saisie_multi = pd.DataFrame(
                     [
-                        {"id_commande": "CMD-001", "client_nom": "SODISTRA", "zone": "Zone A", "volume_t": 54},
-                        {"id_commande": "CMD-002", "client_nom": "COVEC - CI", "zone": "Zone B", "volume_t": 27}
+                        {"date_livraison": datetime.date.today(), "client_nom": liste_clients_choix[0] if liste_clients_choix else "", "site": liste_sites_choix[0] if liste_sites_choix else "Zone A", "volume_t": 54},
+                        {"date_livraison": datetime.date.today() + datetime.timedelta(days=1), "client_nom": liste_clients_choix[0] if liste_clients_choix else "", "site": liste_sites_choix[0] if liste_sites_choix else "Zone A", "volume_t": 27}
                     ]
                 )
 
-            st.markdown("### ✍️ Grille des Commandes du Jour (Saisie dynamique)")
+            st.markdown("### ✍️ Grille des Commandes Planifiées")
+            st.info("💡 Note : Pour ajouter une livraison, cliquez sur le bouton '+' en bas du tableau. Le code commande sera généré automatiquement lors du calcul.")
+            
             commandes_editees = st.data_editor(
-                st.session_state.df_saisie,
+                st.session_state.df_saisie_multi,
                 num_rows="dynamic",
                 column_config={
-                    "id_commande": st.column_config.TextColumn("Code Commande", required=True),
-                    "client_nom": st.column_config.TextColumn("Nom du Client Destinataire", required=True),
-                    "zone": st.column_config.SelectboxColumn("Zone Logistique", options=["Zone A", "Zone B", "Zone C"], required=True),
+                    "date_livraison": st.column_config.DateColumn("Date de Livraison", required=True, format="DD/MM/YYYY"),
+                    "client_nom": st.column_config.SelectboxColumn("Client Destinataire", options=liste_clients_choix, required=True),
+                    "site": st.column_config.SelectboxColumn("Site / Ville", options=liste_sites_choix, required=True),
                     "volume_t": st.column_config.NumberColumn("Volume (Tonnes)", min_value=0, step=27, required=True),
                 },
                 use_container_width=True,
-                key="editeur_commandes"
+                key="editeur_multi_jours"
             )
 
             st.markdown("---")
-            if st.button("⚡ Calculer le Plan de Dispatching & Sauvegarder"):
+            if st.button("⚡ Valider, Générer les Codes & Sauvegarder le Planning"):
                 df_cmd = pd.DataFrame(commandes_editees)
-                df_cmd = df_cmd[df_cmd["client_nom"] != ""]  
+                df_cmd = df_cmd[df_cmd["client_nom"] != ""]  # Nettoyage des lignes blanches
 
                 if not df_cmd.empty:
                     st.markdown("### 📋 Plan d'Affectation Transport Optimisé")
                     
                     df_surplus_dispo = df[df["client_id"] != ""].copy()
                     suggestions = []
-                    mises_a_jour_sheet = [["id_commande", "client_nom", "zone", "volume_t", "camion_recommande", "economie_fcfa"]]
+                    mises_a_jour_sheet = [["date_livraison", "id_commande", "client_nom", "site", "zone", "volume_t", "camion_recommande", "economie_fcfa"]]
+                    
+                    # Compteur pour la création de séquences de codes de commande uniques
+                    sequence_compteur = 1
                     
                     for idx, row_cmd in df_cmd.iterrows():
-                        zone_cmd = row_cmd["zone"]
+                        client_cmd = row_cmd["client_nom"]
                         vol_cmd = row_cmd["volume_t"]
+                        site_cmd = row_cmd["site"]
+                        
+                        # Conversion et sécurisation de la date
+                        date_obj = row_cmd["date_livraison"]
+                        if isinstance(date_obj, str):
+                            date_str_code = date_obj.replace("-", "")
+                            date_str_sheet = date_obj
+                        else:
+                            date_str_code = date_obj.strftime("%Y%m%d")
+                            date_str_sheet = date_obj.strftime("%Y-%m-%d")
+                        
+                        # 1. GÉNÉRATION AUTOMATIQUE DU CODE COMMANDE
+                        code_auto = f"CMD-{date_str_code}-{sequence_compteur:03d}"
+                        sequence_compteur += 1
+                        
                         nb_voyages = math.ceil(vol_cmd / tonnage_std)
                         
-                        partenaires_zone = df_surplus_dispo[df_surplus_dispo["zone"] == zone_cmd]
+                        # 2. RÉCUPÉRATION AUTOMATIQUE DE LA ZONE DEPUIS LA BASE CLIENT
+                        match_client = df_surplus_dispo[df_surplus_dispo["client_nom"] == client_cmd]
+                        if not match_client.empty:
+                            zone_detectee = match_client.iloc[0]["zone"]
+                        else:
+                            zone_detectee = site_cmd if site_cmd in ["Zone A", "Zone B", "Zone C"] else "Zone A"
+                        
+                        # 3. MOTEUR DE MATCHING AVEC LA FLOTTE CONTRACTUALISÉE
+                        partenaires_zone = df_surplus_dispo[df_surplus_dispo["zone"] == zone_detectee]
                         
                         if not partenaires_zone.empty:
                             nom_partenaire = partenaires_zone.iloc[0]["client_nom"]
@@ -280,22 +314,26 @@ try:
                             gain_text = "0 FCFA"
                             
                         suggestions.append({
-                            "Code Commande": row_cmd["id_commande"],
-                            "Destination": row_cmd["client_nom"],
-                            "Zone": zone_cmd,
+                            "Date Prévue": date_str_sheet,
+                            "Code Commande (Auto)": code_auto,
+                            "Destination": client_cmd,
+                            "Site": site_cmd,
+                            "Zone Logistique": zone_detectee,
                             "Volume": f"{vol_cmd} T",
                             "Voyages Requis": nb_voyages,
                             "Transporteur Recommandé": solution_transport,
-                            "Économie Estimée": gain_text
+                            "Économie Globale": gain_text
                         })
                         
                         mises_a_jour_sheet.append([
-                            row_cmd["id_commande"], row_cmd["client_nom"], zone_cmd, vol_cmd, solution_transport, gain_prevu
+                            date_str_sheet, code_auto, client_cmd, site_cmd, zone_detectee, vol_cmd, solution_transport, gain_prevu
                         ])
 
+                    # Affichage du tableau de dispatching final à l'utilisateur
                     st.dataframe(pd.DataFrame(suggestions), use_container_width=True)
                     
-                    with st.spinner("💾 Enregistrement du planning dans Google Sheets..."):
+                    # --- SAUVEGARDE SUR GOOGLE SHEETS ---
+                    with st.spinner("💾 Enregistrement du planning prévisionnel dans Google Sheets..."):
                         try:
                             scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
                             if "gcp_service_account" in st.secrets:
@@ -310,17 +348,22 @@ try:
                             wb = gc.open_by_key(SHEET_ID)
                             ws_livraisons = wb.worksheet("LIVRAISONS_JOUR")
                             
-                            ws_livraisons.resize(rows=100)
+                            # Nettoyage et écriture par bloc
+                            ws_livraisons.resize(rows=150)
                             ws_livraisons.update("A3", mises_a_jour_sheet)
-                            st.success(f"✅ Planning de {len(df_cmd)} commandes écrit avec succès dans Google Sheets (Onglet LIVRAISONS_JOUR) !")
+                            st.success(f"✅ Planning moyen terme de {len(df_cmd)} ordres de transport enregistré dans Google Sheets (Onglet LIVRAISONS_JOUR) !")
                         except Exception as sheet_err:
                             st.error(f"Erreur lors de l'écriture sur Google Sheets : {sheet_err}")
 
-                    total_voyages_jour = sum([math.ceil(v / tonnage_std) for v in df_cmd["volume_t"]])
-                    if total_voyages_jour > 40:
-                        st.error(f"🚨 **Alerte Surcharge Silos :** {total_voyages_jour} rotations planifiées. Risque d'engorgement majeur sous les silos pneumatiques de l'usine d'Abidjan (Seuil critique = 40).")
-                    else:
-                        st.success(f"🟢 **Fluidité Usine OK :** {total_voyages_jour} rotations planifiées. Volume parfaitement absorbable par les infrastructures de l'usine.")
+                    # Alerte Capacités Silos Usine (Calculé sur le nombre de chargements max par jour dans la liste saisie)
+                    df_res_voyages = pd.DataFrame(suggestions)
+                    df_voyages_par_jour = df_res_voyages.groupby("Date Prévue")["Voyages Requis"].sum()
+                    
+                    for jour_p, total_v in df_voyages_par_jour.items():
+                        if total_v > 40:
+                            st.error(f"🚨 **Alerte Saturation Silos le {jour_p} :** {total_v} rotations planifiées ce jour-là. Risque d'attente prolongée à l'usine d'Abidjan (Capacité optimale = 40).")
+                        else:
+                            st.caption(f"🟢 Journée du {jour_p} fluide : {total_v} rotations.")
                 else:
                     st.warning("Veuillez renseigner au moins une commande valide.")
                     

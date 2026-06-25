@@ -1,6 +1,6 @@
 """
 ═══════════════════════════════════════════════════════════════════════════════
-APPLICATION INTÉGRALE — TMS & BUSINESS INTELLIGENCE VRAC
+APPLICATION INTÉGRALE — TMS & BUSINESS INTELLIGENCE VRAC (Version Dynamique Usine)
 LH Côte d'Ivoire | Mapping Vrac & Planification Flotte
 ═══════════════════════════════════════════════════════════════════════════════
 """
@@ -57,20 +57,20 @@ def load_data():
             creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         except Exception as e:
             st.error(f"Erreur lors de la lecture des Secrets Cloud : {e}")
-            return pd.DataFrame(), pd.DataFrame(), 4500.0, 27.0, 0.92
+            return pd.DataFrame(), pd.DataFrame(), 4500.0, 27.0, 0.92, 5.3599, -4.0083
     else:
         if os.path.exists(SERVICE_ACCOUNT_FILE):
             creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
         else:
             st.error("Fichier 'service_account.json' introuvable en local et aucun Secret détecté sur le Cloud.")
-            return pd.DataFrame(), pd.DataFrame(), 4500.0, 27.0, 0.92
+            return pd.DataFrame(), pd.DataFrame(), 4500.0, 27.0, 0.92, 5.3599, -4.0083
     
     try:
         gc = gspread.authorize(creds)
         wb = gc.open_by_key(SHEET_ID)
     except Exception as e:
         st.error(f"Erreur de connexion à Google Sheets : {e}")
-        return pd.DataFrame(), pd.DataFrame(), 4500.0, 27.0, 0.92
+        return pd.DataFrame(), pd.DataFrame(), 4500.0, 27.0, 0.92, 5.3599, -4.0083
     
     # Lecture des onglets nécessaires
     df_sites = fetch_with_auto_head(wb.worksheet("CLIENTS_SITES"))
@@ -90,11 +90,20 @@ def load_data():
     try: coeff_remplissage = float(df_params.loc["coef_remplissage_min", "valeur"])
     except: coeff_remplissage = 0.92
 
+    # --- NOUVEAUTÉ : LECTURE DYNAMIQUE DES COORDONNÉES USINE ---
+    try:
+        usine_lat = float(df_params.loc["usine_latitude", "valeur"])
+        usine_lon = float(df_params.loc["usine_longitude", "valeur"])
+    except:
+        # Fallback si absent du Sheets (Coordonnées par défaut Abidjan)
+        usine_lat = 5.3599
+        usine_lon = -4.0083
+
     # Sécurité si un DataFrame vital est vide
     for df_temp, name in [(df_sites, "CLIENTS_SITES"), (df_flotte, "FLOTTE_CLIENTS"), (df_volumes, "VOLUMES_SAP")]:
         if df_temp.empty or "client_id" not in df_temp.columns:
             st.error(f"⚠️ Impossible de trouver la colonne 'client_id' dans l'onglet : {name}.")
-            return pd.DataFrame(), pd.DataFrame(), spot_ref, tonnage_std, coeff_remplissage
+            return pd.DataFrame(), pd.DataFrame(), spot_ref, tonnage_std, coeff_remplissage, usine_lat, usine_lon
 
     # Nettoyage des chaînes
     for d in [df_sites, df_flotte, df_volumes, df_flotte_lh]:
@@ -126,7 +135,7 @@ def load_data():
     df_main["gain_par_tonne"] = df_main["tarif_spot_ref"] - df_main["tarif_cible_client"]
     df_main["economie_potentielle_mensuelle"] = df_main["surplus_t_mois"] * df_main["gain_par_tonne"]
     
-    return df_main, df_flotte_lh, spot_ref, tonnage_std, coeff_remplissage
+    return df_main, df_flotte_lh, spot_ref, tonnage_std, coeff_remplissage, usine_lat, usine_lon
 
 # ── INTERFACE UTILISATEUR (STREAMLIT) ────────────────────────────────────────
 st.title("🚛 LH Côte d'Ivoire — Pilotage Logistique & Financier Vrac")
@@ -136,7 +145,7 @@ if st.sidebar.button("🔄 Rafraîchir les données"):
     st.rerun()
 
 try:
-    df, df_lh, spot_ref, tonnage_std, coeff_remplissage = load_data()
+    df, df_lh, spot_ref, tonnage_std, coeff_remplissage, usine_lat, usine_lon = load_data()
     
     if not df.empty and "client_nom" in df.columns:
         surplus_total = df['surplus_t_mois'].sum()
@@ -164,14 +173,16 @@ try:
             "📅 Planification des Tournées (Dispatch)"
         ])
         
-        # ONGLET 1 : CARTE INTERACTIVE
+        # ONGLET 1 : CARTE INTERACTIVE (DYNAMIQUE)
         with tab1:
             st.subheader("Cartographie des sites clients")
             df_map = df.dropna(subset=['latitude', 'longitude'])
             df_map = df_map[(df_map['latitude'] != '') & (df_map['longitude'] != '')]
             if not df_map.empty:
-                m = folium.Map(location=[5,29727556969069, -4,01315427034041], zoom_start=11, tiles="OpenStreetMap")
-                folium.Marker([5,29727556969069, -4,01315427034041], popup="Usine LH CI", icon=folium.Icon(color="black", icon="industry", prefix='fa')).add_to(m)
+                # La carte se centre dynamiquement sur la variable usine_lat et usine_lon
+                m = folium.Map(location=[usine_lat, usine_lon], zoom_start=11, tiles="OpenStreetMap")
+                folium.Marker([usine_lat, usine_lon], popup="Usine LH CI", icon=folium.Icon(color="black", icon="industry", prefix='fa')).add_to(m)
+                
                 for idx, row in df_map.iterrows():
                     try:
                         lat, lon = float(row['latitude']), float(row['longitude'])
@@ -217,7 +228,6 @@ try:
             st.subheader("📋 Saisie des Commandes du Jour & Dispatching Automatique")
             st.write("Saisissez ou collez votre carnet de commandes du jour directement dans la grille ci-dessous.")
 
-            # Initialisation d'un tableau de saisie par défaut
             if "df_saisie" not in st.session_state:
                 st.session_state.df_saisie = pd.DataFrame(
                     [
@@ -226,7 +236,6 @@ try:
                     ]
                 )
 
-            # Saisie interactive intégrée (st.data_editor)
             st.markdown("### ✍️ Grille des Commandes du Jour (Saisie dynamique)")
             commandes_editees = st.data_editor(
                 st.session_state.df_saisie,
@@ -244,7 +253,7 @@ try:
             st.markdown("---")
             if st.button("⚡ Calculer le Plan de Dispatching & Sauvegarder"):
                 df_cmd = pd.DataFrame(commandes_editees)
-                df_cmd = df_cmd[df_cmd["client_nom"] != ""]  # Nettoyer les lignes blanches
+                df_cmd = df_cmd[df_cmd["client_nom"] != ""]  
 
                 if not df_cmd.empty:
                     st.markdown("### 📋 Plan d'Affectation Transport Optimisé")
@@ -258,7 +267,6 @@ try:
                         vol_cmd = row_cmd["volume_t"]
                         nb_voyages = math.ceil(vol_cmd / tonnage_std)
                         
-                        # Moteur de matching géographique intelligent
                         partenaires_zone = df_surplus_dispo[df_surplus_dispo["zone"] == zone_cmd]
                         
                         if not partenaires_zone.empty:
@@ -285,10 +293,8 @@ try:
                             row_cmd["id_commande"], row_cmd["client_nom"], zone_cmd, vol_cmd, solution_transport, gain_prevu
                         ])
 
-                    # Affichage des recommandations logistiques
                     st.dataframe(pd.DataFrame(suggestions), use_container_width=True)
                     
-                    # --- SAUVEGARDE EN TEMPS RÉEL DANS GOOGLE SHEETS ---
                     with st.spinner("💾 Enregistrement du planning dans Google Sheets..."):
                         try:
                             scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -304,16 +310,12 @@ try:
                             wb = gc.open_by_key(SHEET_ID)
                             ws_livraisons = wb.worksheet("LIVRAISONS_JOUR")
                             
-                            # Nettoyage de l'ancien tableau à partir de la ligne 3
                             ws_livraisons.resize(rows=100)
-                            
-                            # Injection éclair par bloc des nouvelles données
                             ws_livraisons.update("A3", mises_a_jour_sheet)
                             st.success(f"✅ Planning de {len(df_cmd)} commandes écrit avec succès dans Google Sheets (Onglet LIVRAISONS_JOUR) !")
                         except Exception as sheet_err:
                             st.error(f"Erreur lors de l'écriture sur Google Sheets : {sheet_err}")
 
-                    # Moteur de calcul d'alertes infrastructures Usine
                     total_voyages_jour = sum([math.ceil(v / tonnage_std) for v in df_cmd["volume_t"]])
                     if total_voyages_jour > 40:
                         st.error(f"🚨 **Alerte Surcharge Silos :** {total_voyages_jour} rotations planifiées. Risque d'engorgement majeur sous les silos pneumatiques de l'usine d'Abidjan (Seuil critique = 40).")

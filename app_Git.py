@@ -171,7 +171,7 @@ try:
             df_map = df_map[(df_map['latitude'] != '') & (df_map['longitude'] != '')]
             if not df_map.empty:
                 m = folium.Map(location=[5,29727556969069, -4,01315427034041], zoom_start=11, tiles="OpenStreetMap")
-                folium.Marker([5.3599, -4.0083], popup="Usine LH CI", icon=folium.Icon(color="black", icon="industry", prefix='fa')).add_to(m)
+                folium.Marker([5,29727556969069, -4,01315427034041], popup="Usine LH CI", icon=folium.Icon(color="black", icon="industry", prefix='fa')).add_to(m)
                 for idx, row in df_map.iterrows():
                     try:
                         lat, lon = float(row['latitude']), float(row['longitude'])

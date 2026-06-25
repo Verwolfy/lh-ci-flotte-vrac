@@ -1,7 +1,7 @@
 """
 ═══════════════════════════════════════════════════════════════════════════════
-DASHBOARD INTÉGRAL — LOGISTIQUE & FINANCE VRAC
-LH Côte d'Ivoire | Mapping Vrac & Optimisation Flotte
+APPLICATION INTÉGRALE — TMS & BUSINESS INTELLIGENCE VRAC
+LH Côte d'Ivoire | Mapping Vrac & Planification Flotte
 ═══════════════════════════════════════════════════════════════════════════════
 """
 
@@ -25,7 +25,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SERVICE_ACCOUNT_FILE = os.path.join(BASE_DIR, "service_account.json")
 
 def fetch_with_auto_head(ws):
-    """Télécharge la grille brute et trouve la ligne d'en-tête technique"""
+    """Télécharge la grille brute et trouve automatiquement la ligne d'en-tête technique"""
     try:
         raw_data = ws.get_all_values()
         if not raw_data:
@@ -33,7 +33,7 @@ def fetch_with_auto_head(ws):
             
         for i, row in enumerate(raw_data):
             cleaned_row = [str(cell).strip() for cell in row]
-            if "client_id" in cleaned_row or "parametre" in cleaned_row or "camion_id" in cleaned_row:
+            if "client_id" in cleaned_row or "parametre" in cleaned_row or "camion_id" in cleaned_row or "id_commande" in cleaned_row:
                 headers = cleaned_row
                 data = raw_data[i + 1:]
                 return pd.DataFrame(data, columns=headers)
@@ -52,28 +52,24 @@ def load_data():
     if "gcp_service_account" in st.secrets:
         try:
             creds_dict = dict(st.secrets["gcp_service_account"])
-            # Remplacement de sécurité pour s'assurer que les sauts de ligne PEM sont valides
             if "private_key" in creds_dict:
                 creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-                
             creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         except Exception as e:
             st.error(f"Erreur lors de la lecture des Secrets Cloud : {e}")
             return pd.DataFrame(), pd.DataFrame(), 4500.0, 27.0, 0.92
     else:
-        # Mode développement (Sur votre PC local)
         if os.path.exists(SERVICE_ACCOUNT_FILE):
             creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
         else:
-            st.error("Fichier d'authentification 'service_account.json' introuvable en local et aucun Secret détecté sur le Cloud.")
+            st.error("Fichier 'service_account.json' introuvable en local et aucun Secret détecté sur le Cloud.")
             return pd.DataFrame(), pd.DataFrame(), 4500.0, 27.0, 0.92
-    # -------------------------------------------------------------------------
     
     try:
         gc = gspread.authorize(creds)
         wb = gc.open_by_key(SHEET_ID)
     except Exception as e:
-        st.error(f"Erreur de connexion à Google Sheets (Vérifiez l'ID ou les permissions de l'e-mail du robot) : {e}")
+        st.error(f"Erreur de connexion à Google Sheets : {e}")
         return pd.DataFrame(), pd.DataFrame(), 4500.0, 27.0, 0.92
     
     # Lecture des onglets nécessaires
@@ -82,22 +78,17 @@ def load_data():
     df_volumes = fetch_with_auto_head(wb.worksheet("VOLUMES_SAP"))
     df_flotte_lh = fetch_with_auto_head(wb.worksheet("FLOTTE_LH"))
     
-    # Extraction des variables globales (fallbacks si manquantes)
+    # Extraction des variables globales depuis PARAMETRES
     try:
         df_params = fetch_with_auto_head(wb.worksheet("PARAMETRES")).set_index("parametre")
         spot_ref = float(df_params.loc["tarif_spot_ref_fcfa_t", "valeur"])
-    except:
-        spot_ref = 4500.0
+    except: spot_ref = 4500.0
         
-    try:
-        tonnage_std = float(df_params.loc["tonnage_camion_std", "valeur"])
-    except:
-        tonnage_std = 27.0
+    try: tonnage_std = float(df_params.loc["tonnage_camion_std", "valeur"])
+    except: tonnage_std = 27.0
         
-    try:
-        coeff_remplissage = float(df_params.loc["coef_remplissage_min", "valeur"])
-    except:
-        coeff_remplissage = 0.92
+    try: coeff_remplissage = float(df_params.loc["coef_remplissage_min", "valeur"])
+    except: coeff_remplissage = 0.92
 
     # Sécurité si un DataFrame vital est vide
     for df_temp, name in [(df_sites, "CLIENTS_SITES"), (df_flotte, "FLOTTE_CLIENTS"), (df_volumes, "VOLUMES_SAP")]:
@@ -129,7 +120,7 @@ def load_data():
     df_main.fillna({"capacite_t_mois": 0, "besoin_exw_t_mois": 0}, inplace=True)
     df_main["surplus_t_mois"] = (df_main["capacite_t_mois"] - df_main["besoin_exw_t_mois"]).clip(lower=0)
     
-    # Calculs Financiers (Décote de 15% par rapport au tarif Spot)
+    # Calculs Financiers
     df_main["tarif_spot_ref"] = spot_ref
     df_main["tarif_cible_client"] = df_main["tarif_spot_ref"] * 0.85
     df_main["gain_par_tonne"] = df_main["tarif_spot_ref"] - df_main["tarif_cible_client"]
@@ -137,7 +128,7 @@ def load_data():
     
     return df_main, df_flotte_lh, spot_ref, tonnage_std, coeff_remplissage
 
-# ── INTERFACE UTILISATEUR ────────────────────────────────────────────────────
+# ── INTERFACE UTILISATEUR (STREAMLIT) ────────────────────────────────────────
 st.title("🚛 LH Côte d'Ivoire — Pilotage Logistique & Financier Vrac")
 
 if st.sidebar.button("🔄 Rafraîchir les données"):
@@ -151,11 +142,11 @@ try:
         surplus_total = df['surplus_t_mois'].sum()
         economie_totale = df['economie_potentielle_mensuelle'].sum()
         
-        # Section haute : Métriques Générales / KPIs de Synthèse
+        # Section haute : KPIs Généraux de Synthèse
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Capacité Totale Flotte Clients", f"{df['capacite_t_mois'].sum():,.0f} T/mois")
-        col2.metric("Surplus Total Exploitable", f"{surplus_total:,.0f} T/mois", delta=f"{surplus_total/tonnage_std:.0f} équiv. voyages", delta_color="inverse")
-        col3.metric("Économie Mensuelle Cible", f"{economie_totale:,.0f} FCFA", delta=f"{economie_totale * 12:,.0f} FCFA / an")
+        col2.metric("Surplus Total Exploitable", f"{surplus_total:,.0f} T/mois", delta=f"{surplus_total/tonnage_std:.0f} voyages théoriques", delta_color="inverse")
+        col3.metric("Économie Mensuelle Target", f"{economie_totale:,.0f} FCFA", delta=f"{economie_totale * 12:,.0f} FCFA / an")
         
         if not df_lh.empty and "status" in df_lh.columns:
             nb_camions_actifs = len(df_lh[df_lh["status"].str.upper() == "ACTIF"])
@@ -165,7 +156,7 @@ try:
 
         st.markdown("---")
         
-        # Structure en Onglets Métiers
+        # Structure en 4 Onglets Métiers
         tab1, tab2, tab3, tab4 = st.tabs([
             "🗺️ Carte Interactive", 
             "📊 Analyse Surplus de Flotte", 
@@ -173,7 +164,7 @@ try:
             "📅 Planification des Tournées (Dispatch)"
         ])
         
-        # ONGLET 1 : CARTE INTERACTIVE (OPENSTREETMAP)
+        # ONGLET 1 : CARTE INTERACTIVE
         with tab1:
             st.subheader("Cartographie des sites clients")
             df_map = df.dropna(subset=['latitude', 'longitude'])
@@ -192,7 +183,7 @@ try:
             else:
                 st.warning("Aucune coordonnée GPS valide trouvée.")
 
-        # ONGLET 2 : ANALYSE DES SURPLUS (CIBLE PROSPECTION COMMERCIAL)
+        # ONGLET 2 : ANALYSE DES SURPLUS (COMMERCIAL)
         with tab2:
             st.subheader("Volume de surplus disponible")
             df_chart = df[df['surplus_t_mois'] > 0].sort_values("surplus_t_mois", ascending=False).head(10)
@@ -214,56 +205,122 @@ try:
             
             if not df_finance_chart.empty:
                 fig_fin = px.pie(df_finance_chart, values='economie_potentielle_mensuelle', names='client_nom',
-                                 title='Répartition des économies potentielles théoriques par compte client (Top 10)')
+                                 title='Répartition des économies potentielles par compte client (Top 10)')
                 st.plotly_chart(fig_fin, use_container_width=True)
                 
             df_display_fin = df[["client_id", "client_nom", "zone", "surplus_t_mois", "tarif_cible_client", "economie_potentielle_mensuelle"]].copy()
             df_display_fin.columns = ["Code SAP", "Nom Client", "Zone", "Surplus (T/mois)", "Tarif Cible (FCFA/T)", "Économie Potentielle (FCFA/mois)"]
             st.dataframe(df_display_fin.sort_values("Économie Potentielle (FCFA/mois)", ascending=False), use_container_width=True)
 
-        # ONGLET 4 : MOTEUR D'OPTIMISATION DU DISPATCH ET DES TOURNÉES
+        # ONGLET 4 : MOTEUR DE SAISIE INTERACTIVE & DISPATCHING LIVE
         with tab4:
-            st.subheader("Moteur d'Optimisation Quotidien")
-            st.write("Saisissez les volumes de livraison demandés pour générer le plan de charge de la flotte.")
-            
-            c1, c2, c3 = st.columns(3)
-            vol_zone_a = c1.number_input("Volume total commandé - Zone A (Abidjan) (T)", min_value=0, value=270, step=27)
-            vol_zone_b = c2.number_input("Volume total commandé - Zone B (Périphérie) (T)", min_value=0, value=108, step=27)
-            vol_zone_c = c3.number_input("Volume total commandé - Zone C (Intérieur) (T)", min_value=0, value=54, step=27)
-            
-            cmd_t_totale = vol_zone_a + vol_zone_b + vol_zone_c
-            camions_requis_a = math.ceil(vol_zone_a / tonnage_std)
-            camions_requis_b = math.ceil(vol_zone_b / tonnage_std)
-            camions_requis_c = math.ceil(vol_zone_c / tonnage_std)
-            total_camions_requis = camions_requis_a + camions_requis_b + camions_requis_c
-            
-            st.markdown("### 📋 Plan de Transport Journalier")
-            summary_data = {
-                "Zone": ["Zone A (Abidjan)", "Zone B (Périphérie)", "Zone C (Intérieur)", "TOTAL"],
-                "Volume Commandé (T)": [vol_zone_a, vol_zone_b, vol_zone_c, cmd_t_totale],
-                "Voyages Complets Requis (Rotations)": [camions_requis_a, camions_requis_b, camions_requis_c, total_camions_requis],
-                "Rotations Max / Camion / Jour": [3, 2, 1, "-"],
-                "Nombre Camions Physiques Requis": [math.ceil(camions_requis_a/3), math.ceil(camions_requis_b/2), math.ceil(camions_requis_c/1), ""]
-            }
-            summary_df = pd.DataFrame(summary_data)
-            nb_physique_total = math.ceil(camions_requis_a/3) + math.ceil(camions_requis_b/2) + math.ceil(camions_requis_c/1)
-            summary_df.iloc[3, 4] = nb_physique_total
-            st.table(summary_df)
-            
-            st.markdown("### ⚠️ Alertes Contraintes Usine")
-            limite_chargement_usine_jour = 40  
-            if total_camions_requis > limite_chargement_usine_jour:
-                st.error(f"🚨 **Risque d'Engorgement :** Le plan requiert {total_camions_requis} chargements sous silos pneumatiques. Le seuil de fluidité de l'usine d'Abidjan est fixé à {limite_chargement_usine_jour} rotations/jour max.")
-            else:
-                st.success(f"🟢 **Fluidité Usine OK :** {total_camions_requis} rotations planifiées. Capacité d'absorption des infrastructures d'Abidjan respectée.")
-                
-            st.markdown("### 🤝 Recommandation d'Activation Flotte Contractualisée")
-            df_prospects = df[df["surplus_t_mois"] > 100].sort_values("surplus_t_mois", ascending=False)
-            if nb_physique_total > 8 and not df_prospects.empty:
-                meilleur_choix = df_prospects.iloc[0]["client_nom"]
-                st.info(f"💡 **Opportunité Logistique :** Pour couvrir la demande sans utiliser de sous-traitants Spot, demandez en priorité l'activation du surplus de flotte du client **{meilleur_choix}** (Tarif négocié cible appliqué).")
-            else:
-                st.write("Le pool permanent est suffisant pour assurer l'activité.")
+            st.subheader("📋 Saisie des Commandes du Jour & Dispatching Automatique")
+            st.write("Saisissez ou collez votre carnet de commandes du jour directement dans la grille ci-dessous.")
 
+            # Initialisation d'un tableau de saisie par défaut
+            if "df_saisie" not in st.session_state:
+                st.session_state.df_saisie = pd.DataFrame(
+                    [
+                        {"id_commande": "CMD-001", "client_nom": "SODISTRA", "zone": "Zone A", "volume_t": 54},
+                        {"id_commande": "CMD-002", "client_nom": "COVEC - CI", "zone": "Zone B", "volume_t": 27}
+                    ]
+                )
+
+            # Saisie interactive intégrée (st.data_editor)
+            st.markdown("### ✍️ Grille des Commandes du Jour (Saisie dynamique)")
+            commandes_editees = st.data_editor(
+                st.session_state.df_saisie,
+                num_rows="dynamic",
+                column_config={
+                    "id_commande": st.column_config.TextColumn("Code Commande", required=True),
+                    "client_nom": st.column_config.TextColumn("Nom du Client Destinataire", required=True),
+                    "zone": st.column_config.SelectboxColumn("Zone Logistique", options=["Zone A", "Zone B", "Zone C"], required=True),
+                    "volume_t": st.column_config.NumberColumn("Volume (Tonnes)", min_value=0, step=27, required=True),
+                },
+                use_container_width=True,
+                key="editeur_commandes"
+            )
+
+            st.markdown("---")
+            if st.button("⚡ Calculer le Plan de Dispatching & Sauvegarder"):
+                df_cmd = pd.DataFrame(commandes_editees)
+                df_cmd = df_cmd[df_cmd["client_nom"] != ""]  # Nettoyer les lignes blanches
+
+                if not df_cmd.empty:
+                    st.markdown("### 📋 Plan d'Affectation Transport Optimisé")
+                    
+                    df_surplus_dispo = df[df["client_id"] != ""].copy()
+                    suggestions = []
+                    mises_a_jour_sheet = [["id_commande", "client_nom", "zone", "volume_t", "camion_recommande", "economie_fcfa"]]
+                    
+                    for idx, row_cmd in df_cmd.iterrows():
+                        zone_cmd = row_cmd["zone"]
+                        vol_cmd = row_cmd["volume_t"]
+                        nb_voyages = math.ceil(vol_cmd / tonnage_std)
+                        
+                        # Moteur de matching géographique intelligent
+                        partenaires_zone = df_surplus_dispo[df_surplus_dispo["zone"] == zone_cmd]
+                        
+                        if not partenaires_zone.empty:
+                            nom_partenaire = partenaires_zone.iloc[0]["client_nom"]
+                            solution_transport = f"🚛 Flotte Client ({nom_partenaire})"
+                            gain_prevu = nb_voyages * tonnage_std * (spot_ref * 0.15)
+                            gain_text = f"{gain_prevu:,.0f} FCFA"
+                        else:
+                            solution_transport = "🔴 Sous-traitant Spot"
+                            gain_prevu = 0
+                            gain_text = "0 FCFA"
+                            
+                        suggestions.append({
+                            "Code Commande": row_cmd["id_commande"],
+                            "Destination": row_cmd["client_nom"],
+                            "Zone": zone_cmd,
+                            "Volume": f"{vol_cmd} T",
+                            "Voyages Requis": nb_voyages,
+                            "Transporteur Recommandé": solution_transport,
+                            "Économie Estimée": gain_text
+                        })
+                        
+                        mises_a_jour_sheet.append([
+                            row_cmd["id_commande"], row_cmd["client_nom"], zone_cmd, vol_cmd, solution_transport, gain_prevu
+                        ])
+
+                    # Affichage des recommandations logistiques
+                    st.dataframe(pd.DataFrame(suggestions), use_container_width=True)
+                    
+                    # --- SAUVEGARDE EN TEMPS RÉEL DANS GOOGLE SHEETS ---
+                    with st.spinner("💾 Enregistrement du planning dans Google Sheets..."):
+                        try:
+                            scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+                            if "gcp_service_account" in st.secrets:
+                                creds_dict = dict(st.secrets["gcp_service_account"])
+                                if "private_key" in creds_dict: 
+                                    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+                                creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+                            else:
+                                creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
+                            
+                            gc = gspread.authorize(creds)
+                            wb = gc.open_by_key(SHEET_ID)
+                            ws_livraisons = wb.worksheet("LIVRAISONS_JOUR")
+                            
+                            # Nettoyage de l'ancien tableau à partir de la ligne 3
+                            ws_livraisons.resize(rows=100)
+                            
+                            # Injection éclair par bloc des nouvelles données
+                            ws_livraisons.update("A3", mises_a_jour_sheet)
+                            st.success(f"✅ Planning de {len(df_cmd)} commandes écrit avec succès dans Google Sheets (Onglet LIVRAISONS_JOUR) !")
+                        except Exception as sheet_err:
+                            st.error(f"Erreur lors de l'écriture sur Google Sheets : {sheet_err}")
+
+                    # Moteur de calcul d'alertes infrastructures Usine
+                    total_voyages_jour = sum([math.ceil(v / tonnage_std) for v in df_cmd["volume_t"]])
+                    if total_voyages_jour > 40:
+                        st.error(f"🚨 **Alerte Surcharge Silos :** {total_voyages_jour} rotations planifiées. Risque d'engorgement majeur sous les silos pneumatiques de l'usine d'Abidjan (Seuil critique = 40).")
+                    else:
+                        st.success(f"🟢 **Fluidité Usine OK :** {total_voyages_jour} rotations planifiées. Volume parfaitement absorbable par les infrastructures de l'usine.")
+                else:
+                    st.warning("Veuillez renseigner au moins une commande valide.")
+                    
 except Exception as e:
     st.error(f"Erreur d'exécution globale de l'application : {e}")

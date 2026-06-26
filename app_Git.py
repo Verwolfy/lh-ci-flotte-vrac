@@ -115,11 +115,10 @@ def fetch_sheet(wb: gspread.Spreadsheet, tab_name: str) -> pd.DataFrame:
 
 
 def to_numeric_safe(series: pd.Series) -> pd.Series:
-    """Convertit en numérique en gérant la virgule française."""
-    # Si la colonne contient du texte, on remplace les virgules par des points
-    if series.dtype == object:
-        series = series.str.replace(',', '.')
-    return pd.to_numeric(series, errors="coerce").fillna(0.0)
+    """Convertit en numérique en gérant la virgule française et les espaces."""
+    # On force la conversion en texte pour nettoyer proprement
+    s_cleaned = series.astype(str).str.replace(',', '.').str.replace(' ', '')
+    return pd.to_numeric(s_cleaned, errors="coerce").fillna(0.0)
 
 
 def param_val(df_params: pd.DataFrame, key: str, default):
@@ -359,8 +358,7 @@ c1, c2, c3, c4, c5 = st.columns(5)
 
 surplus_total  = df["surplus_t_mois"].sum()         if "surplus_t_mois"         in df.columns else 0.0
 economie_total = df["economie_pot_mensuelle"].sum() if "economie_pot_mensuelle" in df.columns else 0.0
-nb_clients_gps = (df[df["latitude"].apply(lambda x: isinstance(x, (int, float)) and x != 0)].shape[0]
-                  if "latitude" in df.columns else 0)
+nb_clients_gps = df[(df["latitude"] != 0) & (df["longitude"] != 0)].shape[0] if "latitude" in df.columns else 0
 
 # Flotte LH : correction du nom de colonne statut (pas 'status')
 nb_actifs_lh = 0
@@ -420,8 +418,7 @@ with tab1:
     with col_filtre3:
         rayon_cercle = st.slider("Rayon cercle surplus (m)", 100, 2000, 500, step=100)
 
-    df_map = df[df["latitude"].apply(lambda x: isinstance(x, (int, float)) and x != 0)].copy()
-    df_map = df_map[df_map["longitude"].apply(lambda x: isinstance(x, (int, float)) and x != 0)]
+    df_map = df[(df["latitude"] != 0) & (df["longitude"] != 0)].copy()
 
     if zone_sel != "Toutes":
         df_map = df_map[df_map["zone"] == zone_sel]

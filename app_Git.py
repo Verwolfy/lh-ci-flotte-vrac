@@ -231,32 +231,36 @@ def load_data():
     df_main = df_sites.copy()
     if not agg_flotte.empty:
         df_main = df_main.merge(agg_flotte, on="client_id", how="left")
-    else:
+    # Garantir la colonne même si la jointure n'a rien apporté
+    if "capacite_t_mois" not in df_main.columns:
         df_main["capacite_t_mois"] = 0.0
 
     if not agg_volumes.empty:
         df_main = df_main.merge(agg_volumes, on="client_id", how="left")
-    else:
+    if "besoin_exw_t_mois" not in df_main.columns:
         df_main["besoin_exw_t_mois"] = 0.0
 
     if not agg_silos.empty:
         df_main = df_main.merge(agg_silos, on="client_id", how="left")
-    else:
+    if "capacite_silo_totale_t" not in df_main.columns:
         df_main["capacite_silo_totale_t"] = 0.0
+    if "nb_silos" not in df_main.columns:
         df_main["nb_silos"] = 0
 
-    df_main.fillna({
-        "capacite_t_mois": 0,
-        "besoin_exw_t_mois": 0,
-        "capacite_silo_totale_t": 0,
-        "nb_silos": 0,
-    }, inplace=True)
+    # fillna sur les colonnes numériques issues des jointures (left join → NaN possibles)
+    for col, default in [
+        ("capacite_t_mois", 0.0),
+        ("besoin_exw_t_mois", 0.0),
+        ("capacite_silo_totale_t", 0.0),
+        ("nb_silos", 0),
+    ]:
+        df_main[col] = to_numeric_safe(df_main[col])
 
-    # ── Calculs surplus & finance ─────────────────────────────────────────────
-    df_main["surplus_t_mois"]       = (df_main["capacite_t_mois"] - df_main["besoin_exw_t_mois"]).clip(lower=0)
-    df_main["tarif_spot_ref"]       = spot_ref
-    df_main["tarif_cible_client"]   = spot_ref * 0.82          # -18% vs spot
-    df_main["gain_par_tonne"]       = spot_ref - df_main["tarif_cible_client"]
+    # ── Calculs surplus & finance — toujours créés, même si données vides ────
+    df_main["surplus_t_mois"]         = (df_main["capacite_t_mois"] - df_main["besoin_exw_t_mois"]).clip(lower=0)
+    df_main["tarif_spot_ref"]         = spot_ref
+    df_main["tarif_cible_client"]     = spot_ref * 0.82          # −18% vs spot
+    df_main["gain_par_tonne"]         = spot_ref - df_main["tarif_cible_client"]
     df_main["economie_pot_mensuelle"] = df_main["surplus_t_mois"] * df_main["gain_par_tonne"]
 
     return {
@@ -345,9 +349,10 @@ st.markdown("---")
 
 c1, c2, c3, c4, c5 = st.columns(5)
 
-surplus_total  = df["surplus_t_mois"].sum()
-economie_total = df["economie_pot_mensuelle"].sum()
-nb_clients_gps = df[df["latitude"].apply(lambda x: isinstance(x, float) and x != 0)].shape[0]
+surplus_total  = df["surplus_t_mois"].sum()         if "surplus_t_mois"         in df.columns else 0.0
+economie_total = df["economie_pot_mensuelle"].sum() if "economie_pot_mensuelle" in df.columns else 0.0
+nb_clients_gps = (df[df["latitude"].apply(lambda x: isinstance(x, (int, float)) and x != 0)].shape[0]
+                  if "latitude" in df.columns else 0)
 
 # Flotte LH : correction du nom de colonne statut (pas 'status')
 nb_actifs_lh = 0

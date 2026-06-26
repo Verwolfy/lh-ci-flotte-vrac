@@ -138,7 +138,11 @@ def load_data():
     """
     creds = get_credentials()
     gc    = gspread.authorize(creds)
-    wb    = gc.open_by_key(SHEET_ID)
+    try:
+        wb = gc.open_by_key(SHEET_ID)
+    except Exception as e:
+        st.error(f"❌ Connexion au classeur Google Sheets impossible : {e}")
+        st.stop()
 
     # ── Lecture des onglets ───────────────────────────────────────────────────
     df_params_raw = fetch_sheet(wb, TAB_PARAMS)
@@ -149,7 +153,7 @@ def load_data():
     df_volumes    = fetch_sheet(wb, TAB_VOLUMES)
 
     # ── Paramètres globaux ────────────────────────────────────────────────────
-    params = {}
+    params = pd.DataFrame()
     if not df_params_raw.empty and "parametre" in df_params_raw.columns:
         params = df_params_raw.set_index("parametre")
 
@@ -458,8 +462,10 @@ with tab1:
     for _, row in df_map.iterrows():
         surplus   = row.get("surplus_t_mois", 0)
         cap_silo  = silos_par_client.get(str(row["client_id"]), 0)
-        dist      = row.get("distance_usine_km", "?")
-        tps       = row.get("temps_trajet_min", "?")
+        dist_val  = row.get("distance_usine_km", "?")
+        tps_val   = row.get("temps_trajet_min", "?")
+        dist      = f"{dist_val:.1f}" if isinstance(dist_val, (int, float)) and dist_val != 0 else "?"
+        tps       = f"{tps_val:.0f}"  if isinstance(tps_val,  (int, float)) and tps_val  != 0 else "?"
         economie  = row.get("economie_pot_mensuelle", 0)
 
         if surplus > 200:
@@ -842,7 +848,7 @@ with tab5:
                     sheets_rows.append([
                         code_cmd, date_str, client_id, client_nom,
                         site_dest, zone_dest, vol, nb_voyages,
-                        transporteur_nom, transporteur_type.split()[1] if transporteur_type else "Spot",
+                        transporteur_nom, transporteur_type.replace("🤝 ", "").replace("🚛 ", "").replace("🔴 ", "") if transporteur_type else "Spot",
                         gain, "Planifié",
                     ])
 
@@ -867,15 +873,16 @@ with tab5:
                         wb      = open_workbook()
                         ws_livr = ensure_livraisons_tab(wb)
 
-                        # Trouver la première ligne vide après les en-têtes
-                        existing = ws_livr.get_all_values()
-                        next_row = max(3, len(existing) + 1)
-
-                        ws_livr.update(
-                            f"A{next_row}",
+                        ws_livr.append_rows(
                             sheets_rows,
                             value_input_option="USER_ENTERED",
+                            table_range="A3",
                         )
                         st.success(f"✅ {len(sheets_rows)} ordres enregistrés dans l'onglet '{TAB_LIVR}'.")
+                        # Réinitialise le formulaire pour éviter les doublons
+                        if "df_commandes" in st.session_state:
+                            del st.session_state["df_commandes"]
+                        import time as _time; _time.sleep(1)
+                        st.rerun()
                     except Exception as exc:
                         st.error(f"Erreur écriture Sheets : {exc}")

@@ -498,9 +498,12 @@ with tab1:
 
         # Cercle proportionnel au surplus
         if surplus > 0:
+            # Calcul intuitif : si surplus = 100T, le rayon = la valeur du curseur
+            rayon_calcule = (surplus / 100) * rayon_cercle
+            
             folium.Circle(
                 location=[float(row["latitude"]), float(row["longitude"])],
-                radius=min(surplus * rayon_cercle / 200, 3000),
+                radius=rayon_calcule,
                 color=color,
                 fill=True,
                 fill_opacity=0.15,

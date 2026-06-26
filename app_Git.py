@@ -194,7 +194,15 @@ def load_data():
 
     agg_volumes = pd.DataFrame()
     if not df_volumes.empty and vol_col:
-        agg_volumes = df_volumes.groupby("client_id").agg(besoin_exw_t_mois=(vol_col, "mean")).reset_index()
+        # On récupère le mois actuel (ex: Juin = 6)
+        mois_actuel = datetime.date.today().month
+        
+        # On prend le volume YTD max du client et on le divise par le mois actuel
+        agg_volumes = (
+            df_volumes.groupby("client_id")
+            .agg(besoin_exw_t_mois=(vol_col, lambda x: x.max() / mois_actuel))
+            .reset_index()
+        )
 
     agg_silos = pd.DataFrame()
     if not df_silos.empty and "capacite_utile_t" in df_silos.columns:

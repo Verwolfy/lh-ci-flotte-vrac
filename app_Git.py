@@ -1,6 +1,6 @@
 """
 ═══════════════════════════════════════════════════════════════════════════════
-TMS & BUSINESS INTELLIGENCE VRAC — v2.2 (Module Immobilisations & Fix Map)
+TMS & BUSINESS INTELLIGENCE VRAC — v2.3 (Version Finale Complète)
 LH Côte d'Ivoire | Mapping Vrac & Planification Flotte
 ═══════════════════════════════════════════════════════════════════════════════
 """
@@ -64,13 +64,11 @@ def get_credentials() -> Credentials:
         st.error("❌ Authentification impossible : ni `service_account.json` local ni Secrets Streamlit Cloud détectés.")
         st.stop()
 
-
 def open_workbook() -> gspread.Spreadsheet:
     """Ouvre le Google Sheets. Utilisé en dehors du cache (pour les écritures)."""
     creds = get_credentials()
     gc    = gspread.authorize(creds)
     return gc.open_by_key(SHEET_ID)
-
 
 def fetch_sheet(wb: gspread.Spreadsheet, tab_name: str) -> pd.DataFrame:
     """Lit un onglet et détecte la ligne d'en-tête technique."""
@@ -94,12 +92,10 @@ def fetch_sheet(wb: gspread.Spreadsheet, tab_name: str) -> pd.DataFrame:
 
     return pd.DataFrame()
 
-
 def to_numeric_safe(series: pd.Series) -> pd.Series:
     """Convertit en numérique en gérant la virgule française et les espaces (Fix Numpy)."""
     s_cleaned = series.astype(str).str.replace(',', '.').str.replace(' ', '')
     return pd.to_numeric(s_cleaned, errors="coerce").fillna(0.0)
-
 
 def param_val(df_params: pd.DataFrame, key: str, default):
     """Extrait une valeur du DataFrame PARAMETRES de façon sécurisée."""
@@ -107,7 +103,6 @@ def param_val(df_params: pd.DataFrame, key: str, default):
         return type(default)(df_params.loc[key, "valeur"])
     except Exception:
         return default
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CHARGEMENT DES DONNÉES (mis en cache)
@@ -135,7 +130,7 @@ def load_data():
     df_livr       = fetch_sheet(wb, TAB_LIVR)
 
     # ── Paramètres globaux ──
-    params = pd.DataFrame() # Initialisation sécurisée
+    params = pd.DataFrame() 
     if not df_params_raw.empty and "parametre" in df_params_raw.columns:
         params = df_params_raw.set_index("parametre")
 
@@ -187,17 +182,14 @@ def load_data():
     else:
         df_livr["temps_sur_site_h"], df_livr["heures_penalite"], df_livr["montant_penalite_fcfa"] = 0.0, 0.0, 0.0
 
-    # ── Agrégations ──
+    # ── Agrégations (incluant la conversion YTD automatique) ──
     agg_flotte = pd.DataFrame()
     if not df_flotte_c.empty and cap_col:
         agg_flotte = df_flotte_c.groupby("client_id").agg(capacite_t_mois=(cap_col, "sum")).reset_index()
 
     agg_volumes = pd.DataFrame()
     if not df_volumes.empty and vol_col:
-        # On récupère le mois actuel (ex: Juin = 6)
         mois_actuel = datetime.date.today().month
-        
-        # On prend le volume YTD max du client et on le divise par le mois actuel
         agg_volumes = (
             df_volumes.groupby("client_id")
             .agg(besoin_exw_t_mois=(vol_col, lambda x: x.max() / mois_actuel))
@@ -275,7 +267,7 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
-    st.caption("v2.2 — Module Immobilisations")
+    st.caption("v2.3 — Version Finale")
     st.caption(f"Mis à jour : {datetime.date.today().strftime('%d/%m/%Y')}")
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -310,7 +302,6 @@ c1, c2, c3, c4, c5 = st.columns(5)
 
 surplus_total  = df["surplus_t_mois"].sum()
 economie_total = df["economie_pot_mensuelle"].sum()
-# Fix de la détection GPS :
 nb_clients_gps = df[(df["latitude"] != 0) & (df["longitude"] != 0)].shape[0] if "latitude" in df.columns else 0
 
 nb_actifs_lh = 0
@@ -591,29 +582,38 @@ with tab5:
                     nb_voyages  = math.ceil(vol / (tonnage_std * coef_remplissage))
                     seq        += 1
 
+                    # ── 1. Identification du Client ──
                     match = df_avec_gps[df_avec_gps["destination_complete"] == dest]
                     if not match.empty:
                         client_nom  = match.iloc[0]["client_nom"]
                         client_id   = match.iloc[0]["client_id"]
                         zone_dest   = match.iloc[0]["zone"]
                         site_dest   = match.iloc[0].get(col_site, "—")
+                        cap_client  = match.iloc[0].get("capacite_t_mois", 0)
                     else:
-                        client_nom, client_id, zone_dest, site_dest = dest, "—", "Zone A", "—"
-
-                    # Algorithme de Matching Transporteur
-                    partenaires = df_avec_gps[(df_avec_gps["zone"] == zone_dest) & (df_avec_gps["surplus_t_mois"] > 0) & (df_avec_gps["client_id"] != client_id)].sort_values("surplus_t_mois", ascending=False)
+                        client_nom, client_id, zone_dest, site_dest, cap_client = dest, "—", "Zone A", "—", 0
 
                     transporteur_type, transporteur_nom, gain = "", "", 0
 
-                    for _, part in partenaires.iterrows():
-                        key_surp = part["destination_complete"]
-                        if surplus_restant.get(key_surp, 0) >= vol:
-                            surplus_restant[key_surp] -= vol
-                            transporteur_nom  = part["client_nom"]
-                            transporteur_type = "🤝 Flotte Client" 
-                            gain = nb_voyages * tonnage_std * (spot_ref * 0.18)
-                            break
+                    # ── PRIORITÉ 1 : Le client a-t-il sa PROPRE flotte ? ──
+                    if cap_client > 0:
+                        transporteur_nom  = client_nom
+                        transporteur_type = "🤝 Flotte Propre"
+                        gain = nb_voyages * tonnage_std * (spot_ref * 0.18)
+                        
+                    # ── PRIORITÉ 2 : Un AUTRE client a-t-il du surplus dans la zone ? ──
+                    if not transporteur_nom:
+                        partenaires = df_avec_gps[(df_avec_gps["zone"] == zone_dest) & (df_avec_gps["surplus_t_mois"] > 0) & (df_avec_gps["client_id"] != client_id)].sort_values("surplus_t_mois", ascending=False)
+                        for _, part in partenaires.iterrows():
+                            key_surp = part["destination_complete"]
+                            if surplus_restant.get(key_surp, 0) >= vol:
+                                surplus_restant[key_surp] -= vol
+                                transporteur_nom  = part["client_nom"]
+                                transporteur_type = "🤝 Flotte Tiers" 
+                                gain = nb_voyages * tonnage_std * (spot_ref * 0.18)
+                                break
 
+                    # ── PRIORITÉ 3 : Flotte LafargeHolcim ──
                     if not transporteur_nom:
                         if not df_flotte_lh.empty and "zone_affectation" in df_flotte_lh.columns:
                             lh_zone = df_flotte_lh[df_flotte_lh["zone_affectation"].isin([zone_dest, "Multi-zones"])]
@@ -622,6 +622,7 @@ with tab5:
                                 transporteur_type = "🚛 Flotte LH"
                                 gain = nb_voyages * tonnage_std * (spot_ref * 0.10)
 
+                    # ── PRIORITÉ 4 : Transporteur Spot ──
                     if not transporteur_nom:
                         transporteur_nom, transporteur_type, gain = "Sous-traitant Spot", "🔴 Spot", 0
 
@@ -634,26 +635,11 @@ with tab5:
                         "Volume (T)": f"{vol:.0f}", "Voyages": nb_voyages, "Transporteur": f"{emoji_type} — {transporteur_nom}", "Économie (FCFA)": f"{gain:,.0f}",
                     })
                     
-                    # Ajout des colonnes vides à la fin pour temps_sur_site_h et source_pointage
                     sheets_rows.append([
                         code_cmd, date_str, client_id, client_nom, site_dest, zone_dest, vol, nb_voyages,
                         transporteur_nom, sheet_type, gain, "Planifié", "", ""
                     ])
 
-                st.markdown("### 📋 Plan de transport généré")
-                df_plan = pd.DataFrame(plan)
-                st.dataframe(df_plan, use_container_width=True)
-
-                st.markdown("### ⚠ Alertes capacité journalière")
-                voyages_par_jour = df_plan.groupby("Date")["Voyages"].sum()
-                for jour, total in voyages_par_jour.items():
-                    if total > seuil_rotations:
-                        st.error(f"🚨 {jour} : {total} rotations planifiées > seuil usine ({seuil_rotations}). Risque de congestion importante sous les silos.")
-                    else:
-                        st.success(f"✅ {jour} : {total} rotations — Capacité usine fluide.")
-
-                st.markdown("---")
-                # ── On supprime l'affichage direct ici pour le mettre en mémoire ──
                 with st.spinner("💾 Enregistrement dans Google Sheets…"):
                     try:
                         wb      = open_workbook()
@@ -661,20 +647,17 @@ with tab5:
 
                         ws_livr.append_rows(sheets_rows, value_input_option="USER_ENTERED", table_range="A3")
                         
-                        # 1. On sauvegarde le rapport généré dans la mémoire de Streamlit
+                        # Mémorisation pour affichage persistant
                         st.session_state["dernier_plan"] = pd.DataFrame(plan)
                         
-                        # 2. On vide le tableau de saisie des commandes
                         if "df_commandes" in st.session_state: 
                             del st.session_state["df_commandes"]
-                            
-                        # 3. On rafraîchit la page instantanément
                         st.rerun()
                         
                     except Exception as exc:
                         st.error(f"Erreur d'écriture sur le Google Sheets : {exc}")
 
-        # 4. EN DEHORS DU BOUTON : On lit la mémoire et on affiche le rapport en permanence
+        # ── Affichage persistant du rapport généré (hors du bouton) ──
         if "dernier_plan" in st.session_state:
             st.success("✅ Ordres de transport enregistrés avec succès dans Google Sheets !")
             st.markdown("### 📋 Dernier plan de transport généré")

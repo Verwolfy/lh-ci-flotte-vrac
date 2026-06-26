@@ -115,7 +115,11 @@ def fetch_sheet(wb: gspread.Spreadsheet, tab_name: str) -> pd.DataFrame:
 
 
 def to_numeric_safe(series: pd.Series) -> pd.Series:
-    return pd.to_numeric(series, errors="coerce").fillna(0)
+    """Convertit en numérique en gérant la virgule française."""
+    # Si la colonne contient du texte, on remplace les virgules par des points
+    if series.dtype == object:
+        series = series.str.replace(',', '.')
+    return pd.to_numeric(series, errors="coerce").fillna(0.0)
 
 
 def param_val(df_params: pd.DataFrame, key: str, default):

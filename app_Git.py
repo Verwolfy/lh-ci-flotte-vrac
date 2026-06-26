@@ -653,22 +653,42 @@ with tab5:
                         st.success(f"✅ {jour} : {total} rotations — Capacité usine fluide.")
 
                 st.markdown("---")
+                # ── On supprime l'affichage direct ici pour le mettre en mémoire ──
                 with st.spinner("💾 Enregistrement dans Google Sheets…"):
                     try:
                         wb      = open_workbook()
                         ws_livr = ensure_livraisons_tab(wb)
 
                         ws_livr.append_rows(sheets_rows, value_input_option="USER_ENTERED", table_range="A3")
-                        st.success(f"✅ {len(sheets_rows)} ordres de transport enregistrés avec succès à la suite de l'onglet '{TAB_LIVR}'.")
                         
-                        # Reset memory to prevent accidental double submission
+                        # 1. On sauvegarde le rapport généré dans la mémoire de Streamlit
+                        st.session_state["dernier_plan"] = pd.DataFrame(plan)
+                        
+                        # 2. On vide le tableau de saisie des commandes
                         if "df_commandes" in st.session_state: 
                             del st.session_state["df_commandes"]
-                        time.sleep(1.5)
+                            
+                        # 3. On rafraîchit la page instantanément
                         st.rerun()
                         
                     except Exception as exc:
                         st.error(f"Erreur d'écriture sur le Google Sheets : {exc}")
+
+        # 4. EN DEHORS DU BOUTON : On lit la mémoire et on affiche le rapport en permanence
+        if "dernier_plan" in st.session_state:
+            st.success("✅ Ordres de transport enregistrés avec succès dans Google Sheets !")
+            st.markdown("### 📋 Dernier plan de transport généré")
+            
+            df_plan = st.session_state["dernier_plan"]
+            st.dataframe(df_plan, use_container_width=True)
+
+            st.markdown("### ⚠ Alertes capacité journalière")
+            voyages_par_jour = df_plan.groupby("Date")["Voyages"].sum()
+            for jour, total in voyages_par_jour.items():
+                if total > seuil_rotations:
+                    st.error(f"🚨 {jour} : {total} rotations planifiées > seuil usine ({seuil_rotations}). Risque de congestion importante sous les silos.")
+                else:
+                    st.success(f"✅ {jour} : {total} rotations — Capacité usine fluide.")
 
 # ── ONGLET 6 — IMMOBILISATIONS (NOUVEAU) ─────────────────────────────────────
 with tab6:
